@@ -49,6 +49,14 @@ async def test_council(user_query: str, output_file: str = None):
         for ranking in metadata.get('aggregate_rankings', []):
             print(f"• {ranking['model']}: Average rank {ranking['average_rank']} (from {ranking['rankings_count']} rankings)")
 
+        print("\n🔍 CODE ANALYZER REVIEW")
+        print("-" * 30)
+        analyzer = metadata.get('analyzer_result', {})
+        if analyzer:
+            print(f"Analyzer Model: {analyzer.get('model', 'Unknown')}")
+            print(f"Target Solution: {analyzer.get('target_solution', 'Unknown')}")
+            print(f"Analysis:\n{analyzer.get('analysis', 'No analysis available')[:500]}{'...' if len(analyzer.get('analysis', '')) > 500 else ''}")
+
         print("\n🎯 STAGE 3: Final Synthesis")
         print("-" * 30)
         print(f"Chairman ({stage3_result['model']}):")

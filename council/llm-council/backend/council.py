@@ -2,12 +2,12 @@
 
 from typing import List, Dict, Any, Tuple
 from .openrouter import query_models_parallel, query_model
-from .config import COUNCIL_MODELS, CHAIRMAN_MODEL
+from .config import CODE_EDITOR_MODELS, CODE_ANALYZER_MODEL, CHAIRMAN_MODEL
 
 
 async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
     """
-    Stage 1: Collect individual responses from all council models.
+    Stage 1: Code Editor models solve the problem independently.
 
     Args:
         user_query: The user's question
@@ -17,8 +17,8 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
     """
     messages = [{"role": "user", "content": user_query}]
 
-    # Query all models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    # Query code editor models in parallel
+    responses = await query_models_parallel(CODE_EDITOR_MODELS, messages)
 
     # Format results
     stage1_results = []
@@ -35,16 +35,16 @@ async def stage1_collect_responses(user_query: str) -> List[Dict[str, Any]]:
 async def stage2_collect_rankings(
     user_query: str,
     stage1_results: List[Dict[str, Any]]
-) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
+) -> Tuple[List[Dict[str, Any]], Dict[str, str], Dict[str, Any]]:
     """
-    Stage 2: Each model ranks the anonymized responses.
+    Stage 2: Code Editor models rank responses, then Code Analyzer analyzes top-ranked code.
 
     Args:
         user_query: The original user query
         stage1_results: Results from Stage 1
 
     Returns:
-        Tuple of (rankings list, label_to_model mapping)
+        Tuple of (rankings list, label_to_model mapping, analyzer_result)
     """
     # Create anonymized labels for responses (Response A, Response B, etc.)
     labels = [chr(65 + i) for i in range(len(stage1_results))]  # A, B, C, ...
@@ -61,16 +61,20 @@ async def stage2_collect_rankings(
         for label, result in zip(labels, stage1_results)
     ])
 
-    ranking_prompt = f"""You are evaluating different responses to the following question:
+    ranking_prompt = f"""You are a Code Editor evaluating different code solutions to the following programming problem:
 
-Question: {user_query}
+Problem: {user_query}
 
-Here are the responses from different models (anonymized):
+Here are the code solutions from different models (anonymized):
 
 {responses_text}
 
 Your task:
-1. First, evaluate each response individually. For each response, explain what it does well and what it does poorly.
+1. First, evaluate each code solution individually. For each solution, explain what it does well and what it does poorly in terms of:
+   - Code correctness and functionality
+   - Code quality and readability
+   - Best practices and efficiency
+   - Error handling and robustness
 2. Then, at the very end of your response, provide a final ranking.
 
 IMPORTANT: Your final ranking MUST be formatted EXACTLY as follows:
@@ -94,10 +98,10 @@ Now provide your evaluation and ranking:"""
 
     messages = [{"role": "user", "content": ranking_prompt}]
 
-    # Get rankings from all council models in parallel
-    responses = await query_models_parallel(COUNCIL_MODELS, messages)
+    # Get rankings from code editor models in parallel
+    responses = await query_models_parallel(CODE_EDITOR_MODELS, messages)
 
-    # Format results
+    # Format ranking results
     stage2_results = []
     for model, response in responses.items():
         if response is not None:
@@ -109,21 +113,71 @@ Now provide your evaluation and ranking:"""
                 "parsed_ranking": parsed
             })
 
-    return stage2_results, label_to_model
+    # Calculate aggregate rankings to find the top-ranked solution
+    aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
+    if aggregate_rankings:
+        top_solution_label = aggregate_rankings[0]["model"]  # Best ranked model
+        top_solution = next((result for result in stage1_results if result["model"] == top_solution_label), None)
+
+        if top_solution:
+            # Code Analyzer analyzes the top-ranked solution
+            analyzer_prompt = f"""You are a Code Analyzer. Your task is to perform a detailed analysis of the following code solution and provide specific improvement suggestions.
+
+Original Problem: {user_query}
+
+Top-ranked Code Solution (from {top_solution['model']}):
+{top_solution['response']}
+
+Please provide:
+1. A detailed analysis of the code's strengths and weaknesses
+2. Specific suggestions for improvements, including:
+   - Code optimization opportunities
+   - Better error handling
+   - Improved readability and maintainability
+   - Additional features or edge cases to consider
+   - Security considerations if applicable
+3. If possible, suggest concrete code modifications
+
+Be thorough but practical in your analysis."""
+
+            analyzer_messages = [{"role": "user", "content": analyzer_prompt}]
+            analyzer_response = await query_model(CODE_ANALYZER_MODEL, analyzer_messages)
+
+            analyzer_result = {
+                "model": CODE_ANALYZER_MODEL,
+                "analysis": analyzer_response.get('content', '') if analyzer_response else "Analysis failed",
+                "target_solution": top_solution_label
+            }
+        else:
+            analyzer_result = {
+                "model": CODE_ANALYZER_MODEL,
+                "analysis": "Could not find top-ranked solution for analysis",
+                "target_solution": None
+            }
+    else:
+        analyzer_result = {
+            "model": CODE_ANALYZER_MODEL,
+            "analysis": "No rankings available for analysis",
+            "target_solution": None
+        }
+
+    return stage2_results, label_to_model, analyzer_result
 
 
 async def stage3_synthesize_final(
     user_query: str,
     stage1_results: List[Dict[str, Any]],
-    stage2_results: List[Dict[str, Any]]
+    stage2_results: List[Dict[str, Any]],
+    analyzer_result: Dict[str, Any]
 ) -> Dict[str, Any]:
     """
-    Stage 3: Chairman synthesizes final response.
+    Stage 3: Chairman synthesizes final response based on analyzer suggestions.
 
     Args:
         user_query: The original user query
         stage1_results: Individual model responses from Stage 1
         stage2_results: Rankings from Stage 2
+        analyzer_result: Analysis from Code Analyzer
 
     Returns:
         Dict with 'model' and 'response' keys
@@ -139,22 +193,36 @@ async def stage3_synthesize_final(
         for result in stage2_results
     ])
 
-    chairman_prompt = f"""You are the Chairman of an LLM Council. Multiple AI models have provided responses to a user's question, and then ranked each other's responses.
+    analyzer_text = f"Code Analyzer ({analyzer_result['model']}):\n{analyzer_result['analysis']}"
 
-Original Question: {user_query}
+    chairman_prompt = f"""You are the Chairman of a Code Review Council. Multiple AI Code Editor models have provided solutions to a programming problem, ranked each other's solutions, and a Code Analyzer has reviewed the top-ranked solution.
 
-STAGE 1 - Individual Responses:
+Your role is to synthesize all this information into a final, improved code solution.
+
+Original Problem: {user_query}
+
+STAGE 1 - Code Editor Solutions:
 {stage1_text}
 
-STAGE 2 - Peer Rankings:
+STAGE 2 - Peer Rankings by Code Editors:
 {stage2_text}
 
-Your task as Chairman is to synthesize all of this information into a single, comprehensive, accurate answer to the user's original question. Consider:
-- The individual responses and their insights
-- The peer rankings and what they reveal about response quality
-- Any patterns of agreement or disagreement
+STAGE 3 - Code Analyzer Review of Top Solution:
+{analyzer_text}
 
-Provide a clear, well-reasoned final answer that represents the council's collective wisdom:"""
+Your task as Chairman is to:
+1. Review all the individual solutions and their rankings
+2. Consider the Code Analyzer's suggestions for improvement
+3. Create a final, improved code solution that incorporates the best elements from all solutions
+4. Address any issues identified by the Code Analyzer
+5. Ensure the final solution is correct, efficient, readable, and robust
+
+Provide a comprehensive final solution that represents the council's collective wisdom, with:
+- The complete, improved code
+- Explanations of key improvements made
+- Any additional considerations or best practices
+
+Final Solution:"""
 
     messages = [{"role": "user", "content": chairman_prompt}]
 
@@ -313,8 +381,8 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
             "response": "All models failed to respond. Please try again."
         }, {}
 
-    # Stage 2: Collect rankings
-    stage2_results, label_to_model = await stage2_collect_rankings(user_query, stage1_results)
+    # Stage 2: Collect rankings and analyzer feedback
+    stage2_results, label_to_model, analyzer_result = await stage2_collect_rankings(user_query, stage1_results)
 
     # Calculate aggregate rankings
     aggregate_rankings = calculate_aggregate_rankings(stage2_results, label_to_model)
@@ -323,13 +391,15 @@ async def run_full_council(user_query: str) -> Tuple[List, List, Dict, Dict]:
     stage3_result = await stage3_synthesize_final(
         user_query,
         stage1_results,
-        stage2_results
+        stage2_results,
+        analyzer_result
     )
 
     # Prepare metadata
     metadata = {
         "label_to_model": label_to_model,
-        "aggregate_rankings": aggregate_rankings
+        "aggregate_rankings": aggregate_rankings,
+        "analyzer_result": analyzer_result
     }
 
     return stage1_results, stage2_results, stage3_result, metadata

@@ -18,6 +18,17 @@ COUNCIL_MODELS = [
     "allenai/molmo-2-8b:free"
 ]
 
+# Code Editor models - 4 models that solve problems independently
+CODE_EDITOR_MODELS = [
+    "nvidia/nemotron-3-nano-30b-a3b:free",
+    "deepseek/deepseek-r1-0528:free",
+    "qwen/qwen-2.5-vl-7b-instruct:free",
+    "xiaomi/mimo-v2-flash:free"
+]
+
+# Code Analyzer model - analyzes and suggests improvements
+CODE_ANALYZER_MODEL = "allenai/molmo-2-8b:free"
+
 # Chairman model - synthesizes final response
 CHAIRMAN_MODEL = "qwen/qwen3-next-80b-a3b-instruct:free"
 
