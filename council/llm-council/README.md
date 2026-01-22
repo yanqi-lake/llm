@@ -85,3 +85,10 @@ Then open http://localhost:5173 in your browser.
 - **Frontend:** React + Vite, react-markdown for rendering
 - **Storage:** JSON files in `data/conversations/`
 - **Package Management:** uv for Python, npm for JavaScript
+
+后端测试脚本:test_council.py
+
+使用方式：
+1.在question.txt输入问题
+2.运行uv run python test_council.py results.json
+3.在results.json中查看结果
